@@ -21,20 +21,34 @@ package org.apache.flink.table.jdbc;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.table.client.gateway.Executor;
 import org.apache.flink.table.client.gateway.StatementResult;
+import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.data.StringData;
 
 import javax.annotation.Nullable;
 
+import java.io.BufferedWriter;
+import java.io.File;
+import java.io.FileWriter;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static org.apache.flink.table.jdbc.utils.DatabaseMetaDataUtils.createCatalogsResultSet;
+import static org.apache.flink.table.jdbc.utils.DatabaseMetaDataUtils.createClientInfoPropertiesResultSet;
+import static org.apache.flink.table.jdbc.utils.DatabaseMetaDataUtils.createColumnsResultSet;
+import static org.apache.flink.table.jdbc.utils.DatabaseMetaDataUtils.createPrimaryKeysResultSet;
 import static org.apache.flink.table.jdbc.utils.DatabaseMetaDataUtils.createSchemasResultSet;
+import static org.apache.flink.table.jdbc.utils.DatabaseMetaDataUtils.createTablesResultSet;
 
 /** Implementation of {@link java.sql.DatabaseMetaData} for flink jdbc driver. */
 public class FlinkDatabaseMetaData extends BaseDatabaseMetaData {
@@ -43,12 +57,35 @@ public class FlinkDatabaseMetaData extends BaseDatabaseMetaData {
     private final Statement statement;
     private final Executor executor;
 
+    private void writeLog(String msg) {
+        String file = "C:\\tmp\\log";
+        if (!new File(file).exists()) {
+            // for debug log
+            return;
+        }
+        SimpleDateFormat simpleDateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+        msg = simpleDateFormat.format(new Date()) + " " + msg + "\n";
+
+        try {
+            BufferedWriter out = new BufferedWriter(new FileWriter(file, true));
+            out.write(msg);
+            out.close();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
     @VisibleForTesting
     protected FlinkDatabaseMetaData(String url, FlinkConnection connection, Statement statement) {
         this.url = url;
         this.connection = connection;
         this.statement = statement;
         this.executor = connection.getExecutor();
+    }
+
+    @Override
+    public ResultSet getClientInfoProperties() throws SQLException {
+        return createClientInfoPropertiesResultSet(statement);
     }
 
     @Override
@@ -66,6 +103,7 @@ public class FlinkDatabaseMetaData extends BaseDatabaseMetaData {
 
     @Override
     public ResultSet getSchemas() throws SQLException {
+        writeLog("getSchemas()");
         try {
             String currentCatalog = connection.getCatalog();
             String currentDatabase = connection.getSchema();
@@ -98,9 +136,8 @@ public class FlinkDatabaseMetaData extends BaseDatabaseMetaData {
         try (StatementResult schemaResult = schemas()) {
             while (schemaResult.hasNext()) {
                 String schema = schemaResult.next().getString(0).toString();
-                if (schemaPattern == null || schema.contains(schemaPattern)) {
-                    schemas.add(schema);
-                }
+                // TODO: support as SHOW DATABASES FROM xx LIKE 'schemaPattern'
+                schemas.add(schema);
             }
         }
         catalogSchemaList.put(catalog, schemas);
@@ -110,11 +147,25 @@ public class FlinkDatabaseMetaData extends BaseDatabaseMetaData {
         return executor.executeStatement("SHOW DATABASES;");
     }
 
-    // TODO Flink will support SHOW DATABASES LIKE statement in FLIP-297, this method will be
-    // supported after that issue.
     @Override
     public ResultSet getSchemas(String catalog, String schemaPattern) throws SQLException {
-        throw new UnsupportedOperationException();
+        // TODO Flink will support SHOW DATABASES LIKE statement in FLIP-297, this method will be
+        // re-supported after that issue.
+        writeLog(String.format("getSchemas(%s, %s)", catalog, schemaPattern));
+        try {
+            String currentCatalog = connection.getCatalog();
+            String currentDatabase = connection.getSchema();
+            List<String> catalogList = new ArrayList<>();
+            Map<String, List<String>> catalogSchemaList = new HashMap<>();
+            connection.setCatalog(catalog);
+            getSchemasForCatalog(catalogList, catalogSchemaList, catalog, schemaPattern);
+            connection.setCatalog(currentCatalog);
+            connection.setSchema(currentDatabase);
+
+            return createSchemasResultSet(statement, catalogList, catalogSchemaList);
+        } catch (Exception e) {
+            throw new SQLException("Get schemas fail", e);
+        }
     }
 
     @Override
@@ -136,20 +187,187 @@ public class FlinkDatabaseMetaData extends BaseDatabaseMetaData {
     public ResultSet getTables(
             String catalog, String schemaPattern, String tableNamePattern, String[] types)
             throws SQLException {
-        throw new UnsupportedOperationException();
+        writeLog(
+                String.format(
+                        "getTables(%s, %s, %s, %s)",
+                        catalog,
+                        schemaPattern,
+                        tableNamePattern,
+                        types == null ? "" : String.join("|", types)));
+        try {
+            String currentCatalog = connection.getCatalog();
+            String currentDatabase = connection.getSchema();
+            List<String> schemasList = new ArrayList<>();
+            Map<String, List<String>> schemaTables = new HashMap<>();
+            Map<String, String[]> tablesInfo = new HashMap<>();
+            connection.setCatalog(catalog);
+            try (StatementResult schemasResult = schemas()) {
+                while (schemasResult.hasNext()) {
+                    String schema = schemasResult.next().getString(0).toString();
+                    if (schemaPattern == null || schema.equals(schemaPattern)) {
+                        schemasList.add(schema);
+                        connection.setSchema(schema);
+                        getTablesForCatalog(
+                                schemaTables, tablesInfo, catalog, schema, tableNamePattern, types);
+                    }
+                }
+            }
+
+            connection.setCatalog(currentCatalog);
+            connection.setSchema(currentDatabase);
+
+            return createTablesResultSet(statement, schemasList, schemaTables, tablesInfo);
+        } catch (Exception e) {
+            throw new SQLException("Get tables fail", e);
+        }
+    }
+
+    private void getTablesForCatalog(
+            Map<String, List<String>> schemaTables,
+            Map<String, String[]> tablesInfo,
+            String catalog,
+            String schema,
+            String tableNamePattern,
+            String[] types) {
+        List<String> tables = new ArrayList<>();
+        schemaTables.put(schema, tables);
+        List<String> viewsInSchema = new ArrayList<>();
+        boolean containView =
+                types == null || Arrays.stream(types).anyMatch(x -> x.equalsIgnoreCase("VIEW"));
+        try (StatementResult viewsResult = views()) {
+            while (viewsResult.hasNext()) {
+                String view = viewsResult.next().getString(0).toString();
+                String viewNameTag = view + "#V";
+                viewsInSchema.add(viewNameTag);
+                if (containView) {
+                    tables.add(viewNameTag);
+                    tablesInfo.put(
+                            schema + "." + viewNameTag,
+                            new String[] {catalog, schema, view, "VIEW"});
+                }
+            }
+        }
+        if (types == null || Arrays.stream(types).anyMatch(x -> x.equalsIgnoreCase("TABLE"))) {
+            try (StatementResult tablesResult = tables(tableNamePattern)) {
+                while (tablesResult.hasNext()) {
+                    String table = tablesResult.next().getString(0).toString();
+                    if (viewsInSchema.contains(table + "#V")) {
+                        // because SHOW TABLES; result include views
+                        continue;
+                    }
+                    String tableNameTag = table + "#T";
+                    tables.add(tableNameTag);
+                    tablesInfo.put(
+                            schema + "." + tableNameTag,
+                            new String[] {catalog, schema, table, "TABLE"});
+                }
+            }
+        }
+    }
+
+    private StatementResult views() {
+        return executor.executeStatement("SHOW VIEWS;");
+    }
+
+    private StatementResult tables(String tableNamePattern) {
+        if (tableNamePattern == null || tableNamePattern.isEmpty()) {
+            return executor.executeStatement("SHOW TABLES;");
+        }
+        return executor.executeStatement(String.format("SHOW TABLES LIKE '%s';", tableNamePattern));
     }
 
     @Override
     public ResultSet getColumns(
             String catalog, String schemaPattern, String tableNamePattern, String columnNamePattern)
             throws SQLException {
-        throw new UnsupportedOperationException();
+        writeLog(
+                String.format(
+                        "getColumns(%s, %s, %s, %s)",
+                        catalog, schemaPattern, tableNamePattern, columnNamePattern));
+        try (StatementResult describeResult = columns(catalog, schemaPattern, tableNamePattern)) {
+            Map<String, String[]> columnInfo = new HashMap<>();
+            List<String> ordinalPositions = new ArrayList<>();
+            int ordinalPosition = 1;
+            StringData tempStringData = null;
+            while (describeResult.hasNext()) {
+                RowData rowData = describeResult.next();
+                String name = rowData.getString(0).toString();
+                String type = rowData.getString(1).toString();
+                boolean nullable = rowData.getBoolean(2);
+                tempStringData = rowData.getString(3);
+                String key = tempStringData == null ? null : tempStringData.toString();
+                tempStringData = rowData.getString(4);
+                String extras = tempStringData == null ? null : tempStringData.toString();
+                tempStringData = rowData.getString(5);
+                String watermark = tempStringData == null ? null : tempStringData.toString();
+                String comment = null;
+                if (rowData.getArity() == 7) {
+                    tempStringData = rowData.getString(6);
+                    comment = tempStringData == null ? null : tempStringData.toString();
+                }
+                ordinalPositions.add(name);
+                ordinalPosition++;
+                if (key != null) {
+                    // append primary key information to comment for DBeaver
+                    comment = comment == null ? "[PK]" : String.format("[PK] %s", comment);
+                }
+                columnInfo.put(
+                        name,
+                        new String[] {
+                            name, type, nullable ? "YES" : "NO", key, extras, watermark, comment
+                        });
+            }
+
+            return createColumnsResultSet(
+                    catalog,
+                    schemaPattern,
+                    tableNamePattern,
+                    statement,
+                    ordinalPositions,
+                    columnInfo);
+        } catch (Exception e) {
+            throw new SQLException("Get Columns fail", e);
+        }
     }
+
+    private StatementResult columns(String catalog, String schema, String table) {
+        return executor.executeStatement(
+                String.format("DESCRIBE `%s`.`%s`.`%s`;", catalog, schema, table));
+    }
+
+    private static final Pattern CONSTRAINT_PATTERN =
+            Pattern.compile(".*CONSTRAINT `([^`]+)` PRIMARY KEY \\(([^)]+)\\) NOT ENFORCED.*");
 
     @Override
     public ResultSet getPrimaryKeys(String catalog, String schema, String table)
             throws SQLException {
-        throw new UnsupportedOperationException();
+        try (StatementResult ddlResult =
+                executor.executeStatement(
+                        String.format(
+                                "SHOW CREATE TABLE `%s`.`%s`.`%s`", catalog, schema, table))) {
+            String ddl = ddlResult.next().getString(0).toString();
+            List<String> columnList = new ArrayList<>();
+            Map<String, String> columnAndPkNames = new HashMap<>();
+            if (ddl.contains("CONSTRAINT")) {
+                Matcher matcher = CONSTRAINT_PATTERN.matcher(ddl);
+                if (matcher.find()) {
+                    String pknName = matcher.group(1);
+                    String columns = matcher.group(2);
+                    String[] split = columns.split(",");
+                    for (int i = 0; i < split.length; i++) {
+                        String column = split[i].trim().replace("`", "");
+                        columnAndPkNames.put(column, pknName);
+                        columnList.add(column);
+                    }
+                } else {
+                    throw new RuntimeException("Pattern no match ddl");
+                }
+            }
+            return createPrimaryKeysResultSet(
+                    catalog, schema, table, statement, columnList, columnAndPkNames);
+        } catch (Exception e) {
+            throw new SQLException("Get PrimaryKeys fail", e);
+        }
     }
 
     @Override

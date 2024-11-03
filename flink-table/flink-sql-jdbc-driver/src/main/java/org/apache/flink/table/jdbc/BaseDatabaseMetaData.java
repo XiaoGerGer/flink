@@ -76,8 +76,7 @@ public abstract class BaseDatabaseMetaData implements DatabaseMetaData {
 
     @Override
     public String getCatalogSeparator() throws SQLException {
-        throw new SQLFeatureNotSupportedException(
-                "FlinkDatabaseMetaData#getCatalogSeparator is not supported");
+        return ".";
     }
 
     @Override

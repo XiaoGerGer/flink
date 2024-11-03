@@ -29,6 +29,7 @@ import javax.annotation.concurrent.NotThreadSafe;
 
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
+import java.sql.PreparedStatement;
 import java.sql.SQLClientInfoException;
 import java.sql.SQLException;
 import java.sql.SQLWarning;
@@ -52,6 +53,7 @@ public class FlinkConnection extends BaseConnection {
     private final Executor executor;
     private final List<Statement> statements;
     private boolean closed = false;
+    private boolean waitJobTerminalState = false;
 
     public FlinkConnection(DriverUri driverUri) {
         this.url = driverUri.getURL();
@@ -66,6 +68,10 @@ public class FlinkConnection extends BaseConnection {
                         RowFormat.JSON);
         driverUri.getCatalog().ifPresent(this::setSessionCatalog);
         driverUri.getDatabase().ifPresent(this::setSessionSchema);
+
+        this.waitJobTerminalState =
+                Boolean.parseBoolean(
+                        driverUri.getProperties().getProperty("waitJobTerminalState", "false"));
     }
 
     @VisibleForTesting
@@ -75,6 +81,10 @@ public class FlinkConnection extends BaseConnection {
         this.executor = executor;
     }
 
+    public boolean isWaitJobTerminalState() {
+        return waitJobTerminalState;
+    }
+
     @Override
     public Statement createStatement() throws SQLException {
         ensureOpen();
@@ -82,6 +92,17 @@ public class FlinkConnection extends BaseConnection {
         statements.add(statement);
         return statement;
     }
+
+    @Override
+    public PreparedStatement prepareStatement(String sql) throws SQLException {
+        ensureOpen();
+        final FlinkPreparedStatement statement = new FlinkPreparedStatement(this, sql);
+        statements.add(statement);
+        return statement;
+    }
+
+    @Override
+    public void clearWarnings() throws SQLException {}
 
     // TODO We currently do not support this, but we can't throw a SQLException here because we want
     // to support jdbc tools such as beeline and sqlline.

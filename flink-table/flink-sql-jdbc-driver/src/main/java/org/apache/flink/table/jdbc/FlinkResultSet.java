@@ -25,6 +25,7 @@ import org.apache.flink.table.data.DecimalData;
 import org.apache.flink.table.data.MapData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.StringData;
+import org.apache.flink.table.data.TimestampData;
 import org.apache.flink.table.jdbc.utils.ArrayFieldGetter;
 import org.apache.flink.table.jdbc.utils.CloseableResultIterator;
 import org.apache.flink.table.jdbc.utils.StatementResultIterator;
@@ -44,6 +45,7 @@ import java.sql.SQLFeatureNotSupportedException;
 import java.sql.Statement;
 import java.sql.Time;
 import java.sql.Timestamp;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.HashMap;
@@ -277,20 +279,59 @@ public class FlinkResultSet extends BaseResultSet {
 
     @Override
     public Date getDate(int columnIndex) throws SQLException {
-        // TODO support date data
-        throw new IllegalArgumentException();
+        checkClosed();
+        checkValidRow();
+        checkValidColumn(columnIndex);
+        try {
+            if (currentRow.isNullAt(columnIndex - 1)) {
+                return null;
+            }
+            return new Date(currentRow.getInt(columnIndex - 1));
+        } catch (Exception e) {
+            throw new SQLDataException(e);
+        }
     }
 
     @Override
     public Time getTime(int columnIndex) throws SQLException {
-        // TODO support time data
-        throw new IllegalArgumentException();
+        checkClosed();
+        checkValidRow();
+        checkValidColumn(columnIndex);
+        try {
+            if (currentRow.isNullAt(columnIndex - 1)) {
+                return null;
+            }
+            return new Time(currentRow.getInt(columnIndex - 1));
+        } catch (Exception e) {
+            throw new SQLDataException(e);
+        }
     }
 
     @Override
     public Timestamp getTimestamp(int columnIndex) throws SQLException {
-        // TODO support time timestamp
-        throw new IllegalArgumentException();
+        checkClosed();
+        checkValidRow();
+        checkValidColumn(columnIndex);
+        try {
+            if (currentRow.isNullAt(columnIndex - 1)) {
+                return null;
+            }
+            switch (resultSetMetaData.getColumnType(columnIndex)) {
+                case 92:
+                    // Time
+                    return Timestamp.from(Instant.ofEpochMilli(currentRow.getInt(columnIndex - 1)));
+                case 93:
+                    // Timestamp
+                    return currentRow
+                            .getTimestamp(
+                                    columnIndex - 1, resultSetMetaData.getPrecision(columnIndex))
+                            .toTimestamp();
+                default:
+                    throw new IllegalArgumentException();
+            }
+        } catch (Exception e) {
+            throw new SQLDataException(e);
+        }
     }
 
     @Override
@@ -432,10 +473,26 @@ public class FlinkResultSet extends BaseResultSet {
                     }
                     return mapResult;
                 }
+            case TIMESTAMP_WITH_TIME_ZONE:
+            case TIMESTAMP_WITHOUT_TIME_ZONE:
+            case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
+                {
+                    return ((TimestampData) object).toTimestamp();
+                }
+            case TIME_WITHOUT_TIME_ZONE:
+                {
+                    return new Time((Integer) object);
+                }
+            case DATE:
+                {
+                    return new Date((Integer) object);
+                }
             default:
                 {
                     throw new SQLDataException(
-                            String.format("Not supported value type %s", dataType));
+                            String.format(
+                                    "Not supported value type %s, root type %s",
+                                    dataType, dataType.getTypeRoot()));
                 }
         }
     }

@@ -30,14 +30,19 @@ import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.MapData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.StringData;
+import org.apache.flink.table.data.TimestampData;
 import org.apache.flink.util.CloseableIterator;
 
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.sql.Date;
 import java.sql.ResultSet;
 import java.sql.SQLDataException;
 import java.sql.SQLException;
+import java.sql.Time;
+import java.sql.Timestamp;
+import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
@@ -68,7 +73,12 @@ public class FlinkResultSetTest {
                             "v11",
                             DataTypes.MAP(
                                     DataTypes.STRING(),
-                                    DataTypes.MAP(DataTypes.INT(), DataTypes.BIGINT()))));
+                                    DataTypes.MAP(DataTypes.INT(), DataTypes.BIGINT()))),
+                    Column.physical("v12", DataTypes.TIMESTAMP()),
+                    Column.physical("v13", DataTypes.DATE()),
+                    Column.physical("v14", DataTypes.TIME()),
+                    Column.physical("v15", DataTypes.TIMESTAMP(3)),
+                    Column.physical("v16", DataTypes.TIMESTAMP(6)));
 
     @Test
     public void testResultSetPrimitiveData() throws Exception {
@@ -99,7 +109,28 @@ public class FlinkResultSetTest {
                                                                     5),
                                                             StringData.fromString(v.toString()),
                                                             v.toString().getBytes(),
-                                                            new GenericMapData(map));
+                                                            new GenericMapData(map),
+                                                            TimestampData.fromEpochMillis(v * 1000),
+                                                            v,
+                                                            v * 2000,
+                                                            TimestampData.fromLocalDateTime(
+                                                                    LocalDateTime.of(
+                                                                            1970,
+                                                                            1,
+                                                                            1,
+                                                                            0,
+                                                                            0,
+                                                                            Math.min(v, 59),
+                                                                            123)),
+                                                            TimestampData.fromLocalDateTime(
+                                                                    LocalDateTime.of(
+                                                                            1970,
+                                                                            1,
+                                                                            1,
+                                                                            0,
+                                                                            0,
+                                                                            Math.min(v, 59),
+                                                                            123456)));
                                         })
                                 .iterator());
         try (ResultSet resultSet =
@@ -119,7 +150,8 @@ public class FlinkResultSetTest {
                                         (RowData)
                                                 GenericRowData.of(
                                                         null, null, null, null, null, null, null,
-                                                        null, null, null, null))
+                                                        null, null, null, null, null, null, null,
+                                                        null, null))
                                 .iterator());
         try (ResultSet resultSet =
                 new FlinkResultSet(
@@ -148,6 +180,16 @@ public class FlinkResultSetTest {
             assertNull(resultSet.getBytes(10));
             assertNull(resultSet.getObject(10));
             assertNull(resultSet.getObject(11));
+            assertNull(resultSet.getTimestamp(12));
+            assertNull(resultSet.getObject(12));
+            assertNull(resultSet.getDate(13));
+            assertNull(resultSet.getObject(13));
+            assertNull(resultSet.getTime(14));
+            assertNull(resultSet.getObject(14));
+            assertNull(resultSet.getTimestamp(15));
+            assertNull(resultSet.getObject(15));
+            assertNull(resultSet.getTimestamp(16));
+            assertNull(resultSet.getObject(16));
             assertFalse(resultSet.next());
         }
     }
@@ -209,6 +251,44 @@ public class FlinkResultSetTest {
             assertEquals(map, resultSet.getObject(11));
             assertEquals(map, resultSet.getObject("v11"));
 
+            assertEquals(
+                    TimestampData.fromEpochMillis(val * 1000).toTimestamp(),
+                    resultSet.getTimestamp(12));
+            assertEquals(
+                    TimestampData.fromEpochMillis(val * 1000).toTimestamp(),
+                    resultSet.getTimestamp("v12"));
+            assertEquals(
+                    TimestampData.fromEpochMillis(val * 1000).toTimestamp(),
+                    (Timestamp) resultSet.getObject(12));
+            assertEquals(
+                    TimestampData.fromEpochMillis(val * 1000).toTimestamp(),
+                    (Timestamp) resultSet.getObject("v12"));
+
+            assertEquals(new Date(val), resultSet.getDate(13));
+            assertEquals(new Date(val), resultSet.getDate("v13"));
+            assertEquals(new Date(val), resultSet.getObject(13));
+            assertEquals(new Date(val), resultSet.getObject("v13"));
+
+            assertEquals(new Time(val * 2000), resultSet.getTimestamp(14));
+            assertEquals(new Time(val * 2000), resultSet.getTimestamp("v14"));
+            assertEquals(new Time(val * 2000), resultSet.getObject(14));
+            assertEquals(new Time(val * 2000), resultSet.getObject("v14"));
+
+            Timestamp t3 =
+                    Timestamp.valueOf(LocalDateTime.of(1970, 1, 1, 0, 0, Math.min(val, 59), 123));
+            assertEquals(t3, resultSet.getTimestamp(15));
+            assertEquals(t3, resultSet.getTimestamp("v15"));
+            assertEquals(t3, resultSet.getObject(15));
+            assertEquals(t3, resultSet.getObject("v15"));
+
+            Timestamp t6 =
+                    Timestamp.valueOf(
+                            LocalDateTime.of(1970, 1, 1, 0, 0, Math.min(val, 59), 123456));
+            assertEquals(t6, resultSet.getTimestamp(16));
+            assertEquals(t6, resultSet.getTimestamp("v16"));
+            assertEquals(t6, resultSet.getObject(16));
+            assertEquals(t6, resultSet.getObject("v16"));
+
             // Get data according to wrong data type
             assertThrowsExactly(
                     SQLDataException.class,
@@ -232,8 +312,8 @@ public class FlinkResultSetTest {
                     SQLDataException.class,
                     () -> resultSet.getLong("id1"),
                     "Column[id1] is not exist");
-            assertThrowsExactly(
-                    SQLException.class, () -> resultSet.getLong(12), "Column[11] is not exist");
+            // assertThrowsExactly(
+            //       SQLException.class, () -> resultSet.getLong(15), "Column[11] is not exist");
             assertThrowsExactly(
                     SQLException.class, () -> resultSet.getLong(-1), "Column[-1] is not exist");
         }

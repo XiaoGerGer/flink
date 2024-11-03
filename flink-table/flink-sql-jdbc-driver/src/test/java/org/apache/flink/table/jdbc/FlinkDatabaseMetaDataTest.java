@@ -27,6 +27,7 @@ import org.junit.jupiter.api.Test;
 
 import java.sql.DatabaseMetaData;
 import java.sql.ResultSet;
+import java.sql.Types;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -37,6 +38,148 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Tests for flink database metadata. */
 public class FlinkDatabaseMetaDataTest extends FlinkJdbcDriverTestBase {
+
+    @Test
+    public void testGetColumns() throws Exception {
+        DriverUri driverUri = getDriverUri();
+        try (FlinkConnection connection = new FlinkConnection(driverUri)) {
+            Executor executor = connection.getExecutor();
+            // create databases in default catalog
+            executeDDL("CREATE DATABASE database11", executor);
+            // executeDDL("use database11", executor);
+            executeDDL(
+                    "CREATE TABLE default_catalog.database11.tb_columns ("
+                            + "f0 CHAR comment 'this is comment',"
+                            + "f1 CHAR,"
+                            + "f2 CHAR(12),"
+                            + "f3 VARCHAR,"
+                            + "f4 VARCHAR(12),"
+                            + "f5 STRING,"
+                            + "f6 BOOLEAN,"
+                            + "f7 BINARY,"
+                            + "f8 VARBINARY,"
+                            + "f9 VARBINARY(12),"
+                            + "f10 BYTES,"
+                            + "f11 DEC,"
+                            + "f12 NUMERIC,"
+                            + "f13 DECIMAL,"
+                            + "f14 DECIMAL(11, 2),"
+                            + "f15 TINYINT,"
+                            + "f16 SMALLINT,"
+                            + "f17 INT,"
+                            + "f18 INTEGER,"
+                            + "f19 BIGINT,"
+                            + "f20 FLOAT,"
+                            + "f21 DOUBLE,"
+                            + "f22 DOUBLE PRECISION,"
+                            + "f23 DATE,"
+                            + "f24 TIME,"
+                            + "f25 TIME(3),"
+                            + "f26 TIMESTAMP,"
+                            + "f27 TIMESTAMP(3),"
+                            + "f28 TIMESTAMP_LTZ,"
+                            + "f29 TIMESTAMP_LTZ(3),"
+                            + "f30 BIGINT,"
+                            + "primary key (f0, f1, f2) not enforced"
+                            + ") WITH ('connector' = 'datagen')",
+                    executor);
+
+            DatabaseMetaData metaData = connection.getMetaData();
+            List<String> strings =
+                    resultSetToListAndClose(
+                            metaData.getColumns(
+                                    "default_catalog", "database11", "tb_columns", "%"));
+            strings.forEach(System.out::println);
+        }
+    }
+
+    @Test
+    public void testGetTables() throws Exception {
+        DriverUri driverUri = getDriverUri();
+        try (FlinkConnection connection = new FlinkConnection(driverUri)) {
+            Executor executor = connection.getExecutor();
+            // create databases in default catalog
+            executeDDL("CREATE DATABASE database11", executor);
+            executeDDL("CREATE DATABASE database12", executor);
+            // executeDDL("use database11", executor);
+            executeDDL(
+                    "CREATE TABLE default_catalog.database11.orders (a BIGINT) WITH ('connector' = 'datagen')",
+                    executor);
+            executeDDL(
+                    "CREATE TABLE default_catalog.database11.users (a BIGINT) WITH ('connector' = 'datagen')",
+                    executor);
+            executeDDL("CREATE VIEW default_catalog.database11.thing_v as select 1", executor);
+
+            // executeDDL("use database12", executor);
+            executeDDL("CREATE VIEW default_catalog.database12.orders_v as select 1", executor);
+
+            executeDDL("CREATE CATALOG catalog2 WITH ('type'='generic_in_memory');", executor);
+            executeDDL("CREATE DATABASE catalog2.db2", executor);
+            // executeDDL("use catalog catalog2", executor);
+            // executeDDL("use db2", executor);
+            executeDDL(
+                    "CREATE TABLE catalog2.db2.tb1 (a BIGINT) WITH ('connector' = 'datagen')",
+                    executor);
+
+            DatabaseMetaData metaData = connection.getMetaData();
+            assertThat(
+                            resultSetToListAndClose(
+                                    metaData.getTables("default_catalog", "database11", "%", null)))
+                    .containsExactly(
+                            "default_catalog,database11,orders,TABLE,,,,,,",
+                            "default_catalog,database11,thing_v,VIEW,,,,,,",
+                            "default_catalog,database11,users,TABLE,,,,,,");
+            assertThat(
+                            resultSetToListAndClose(
+                                    metaData.getTables("default_catalog", null, null, null)))
+                    .containsExactly(
+                            "default_catalog,database11,orders,TABLE,,,,,,",
+                            "default_catalog,database11,thing_v,VIEW,,,,,,",
+                            "default_catalog,database11,users,TABLE,,,,,,",
+                            "default_catalog,database12,orders_v,VIEW,,,,,,");
+            assertThat(
+                            resultSetToListAndClose(
+                                    metaData.getTables(
+                                            "default_catalog", null, null, new String[] {"TABLE"})))
+                    .containsExactly(
+                            "default_catalog,database11,orders,TABLE,,,,,,",
+                            "default_catalog,database11,users,TABLE,,,,,,");
+            assertThat(
+                            resultSetToListAndClose(
+                                    metaData.getTables(
+                                            "default_catalog", null, null, new String[] {"VIEW"})))
+                    .containsExactly(
+                            "default_catalog,database11,thing_v,VIEW,,,,,,",
+                            "default_catalog,database12,orders_v,VIEW,,,,,,");
+            assertThat(
+                            resultSetToListAndClose(
+                                    metaData.getTables(
+                                            "default_catalog",
+                                            "database11",
+                                            null,
+                                            new String[] {"TABLE"})))
+                    .containsExactly(
+                            "default_catalog,database11,orders,TABLE,,,,,,",
+                            "default_catalog,database11,users,TABLE,,,,,,");
+            assertThat(
+                            resultSetToListAndClose(
+                                    metaData.getTables(
+                                            "default_catalog",
+                                            "database11",
+                                            null,
+                                            new String[] {"VIEW"})))
+                    .containsExactly("default_catalog,database11,thing_v,VIEW,,,,,,");
+            assertThat(
+                            resultSetToListAndClose(
+                                    metaData.getTables(
+                                            "default_catalog",
+                                            "database11",
+                                            "ord%",
+                                            new String[] {"TABLE"})))
+                    .containsExactly("default_catalog,database11,orders,TABLE,,,,,,");
+        }
+    }
+
     @Test
     public void testCatalogSchemas() throws Exception {
 
@@ -90,6 +233,9 @@ public class FlinkDatabaseMetaDataTest extends FlinkJdbcDriverTestBase {
             // Validate that the default catalog and database are not changed.
             assertEquals("test_catalog2", connection.getCatalog());
             assertEquals("database21", connection.getSchema());
+
+            assertThat(resultSetToListAndClose(databaseMetaData.getSchemas("test_catalog2", null)))
+                    .containsExactly("database11", "database21", "database31", "default");
 
             assertFalse(databaseMetaData.allProceduresAreCallable());
             assertTrue(databaseMetaData.allTablesAreSelectable());
@@ -199,7 +345,17 @@ public class FlinkDatabaseMetaDataTest extends FlinkJdbcDriverTestBase {
         while (resultSet.next()) {
             List<String> columnStringList = new ArrayList<>(columnCount);
             for (int i = 1; i <= columnCount; i++) {
-                columnStringList.add(resultSet.getString(i));
+                switch (resultSet.getMetaData().getColumnType(i)) {
+                    case Types.INTEGER:
+                        columnStringList.add(String.valueOf(resultSet.getInt(i)));
+                        break;
+                    case Types.BIGINT:
+                        columnStringList.add(String.valueOf(resultSet.getLong(i)));
+                        break;
+                    default:
+                        columnStringList.add(resultSet.getString(i));
+                        break;
+                }
             }
             resultList.add(StringUtils.join(columnStringList, ","));
         }

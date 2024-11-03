@@ -25,6 +25,9 @@ import java.sql.Statement;
 
 /** Base statement in flink driver. */
 public abstract class BaseStatement implements Statement {
+
+    private int maxRow = 0;
+
     @Override
     public int executeUpdate(String sql) throws SQLException {
         throw new SQLFeatureNotSupportedException(
@@ -45,14 +48,12 @@ public abstract class BaseStatement implements Statement {
 
     @Override
     public int getMaxRows() throws SQLException {
-        throw new SQLFeatureNotSupportedException(
-                "FlinkStatement#getMaxRows is not supported yet.");
+        return maxRow;
     }
 
     @Override
     public void setMaxRows(int max) throws SQLException {
-        throw new SQLFeatureNotSupportedException(
-                "FlinkStatement#setMaxRows is not supported yet.");
+        this.maxRow = max;
     }
 
     @Override

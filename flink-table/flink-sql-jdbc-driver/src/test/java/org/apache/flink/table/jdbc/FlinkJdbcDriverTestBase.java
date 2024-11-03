@@ -55,6 +55,10 @@ public class FlinkJdbcDriverTestBase {
         return getDriverUri("jdbc:flink://%s:%s", new Properties());
     }
 
+    protected DriverUri getDriverUri(Properties properties) throws Exception {
+        return getDriverUri("jdbc:flink://%s:%s", properties);
+    }
+
     protected DriverUri getDriverUri(String url, Properties properties) throws Exception {
         return DriverUri.create(
                 String.format(
