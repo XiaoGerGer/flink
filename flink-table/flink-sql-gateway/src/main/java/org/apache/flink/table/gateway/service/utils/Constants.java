@@ -25,6 +25,7 @@ public class Constants {
     public static final String JOB_NAME = "job name";
     public static final String STATUS = "status";
     public static final String START_TIME = "start time";
+    public static final String ERROR_MESSAGE = "error message";
     public static final String SET_KEY = "key";
     public static final String SET_VALUE = "value";
     public static final String COMPLETION_CANDIDATES = "candidates";

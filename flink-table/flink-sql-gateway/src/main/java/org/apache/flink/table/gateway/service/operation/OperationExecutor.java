@@ -20,6 +20,8 @@ package org.apache.flink.table.gateway.service.operation;
 
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.JobID;
+import org.apache.flink.api.common.JobStatus;
+import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.client.cli.ClientOptions;
 import org.apache.flink.client.deployment.ClusterClientFactory;
 import org.apache.flink.client.deployment.ClusterClientServiceLoader;
@@ -30,6 +32,7 @@ import org.apache.flink.configuration.CheckpointingOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.execution.SavepointFormatType;
 import org.apache.flink.runtime.client.JobStatusMessage;
+import org.apache.flink.runtime.jobmaster.JobResult;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.CatalogNotExistException;
 import org.apache.flink.table.api.DataTypes;
@@ -112,6 +115,7 @@ import java.util.stream.Collectors;
 
 import static org.apache.flink.table.api.internal.TableResultInternal.TABLE_RESULT_OK;
 import static org.apache.flink.table.gateway.service.utils.Constants.COMPLETION_CANDIDATES;
+import static org.apache.flink.table.gateway.service.utils.Constants.ERROR_MESSAGE;
 import static org.apache.flink.table.gateway.service.utils.Constants.JOB_ID;
 import static org.apache.flink.table.gateway.service.utils.Constants.JOB_NAME;
 import static org.apache.flink.table.gateway.service.utils.Constants.SAVEPOINT_PATH;
@@ -666,15 +670,39 @@ public class OperationExecutor {
             throws SqlExecutionException {
         Configuration configuration = tableEnv.getConfig().getConfiguration();
         Duration clientTimeout = configuration.get(ClientOptions.CLIENT_TIMEOUT);
-        Collection<JobStatusMessage> jobs =
+        Collection<Tuple2<JobStatusMessage, JobResult>> jobs =
                 runClusterAction(
                         configuration,
                         operationHandle,
                         clusterClient -> {
                             try {
-                                return clusterClient
-                                        .listJobs()
-                                        .get(clientTimeout.toMillis(), TimeUnit.MILLISECONDS);
+                                return clusterClient.listJobs()
+                                        .get(clientTimeout.toMillis(), TimeUnit.MILLISECONDS)
+                                        .stream()
+                                        .map(
+                                                jobStatusMessage -> {
+                                                    JobResult jobResult = null;
+                                                    if (jobStatusMessage
+                                                            .getJobState()
+                                                            .equals(JobStatus.FAILED)) {
+                                                        try {
+                                                            jobResult =
+                                                                    clusterClient
+                                                                            .requestJobResult(
+                                                                                    jobStatusMessage
+                                                                                            .getJobId())
+                                                                            .get(
+                                                                                    clientTimeout
+                                                                                            .toMillis(),
+                                                                                    TimeUnit
+                                                                                            .MILLISECONDS);
+                                                        } catch (Exception e) {
+                                                            // ignore
+                                                        }
+                                                    }
+                                                    return Tuple2.of(jobStatusMessage, jobResult);
+                                                })
+                                        .collect(Collectors.toList());
                             } catch (Exception e) {
                                 throw new SqlExecutionException(
                                         "Failed to list jobs in the cluster.", e);
@@ -683,13 +711,29 @@ public class OperationExecutor {
         List<RowData> resultRows =
                 jobs.stream()
                         .map(
-                                job ->
-                                        GenericRowData.of(
-                                                StringData.fromString(job.getJobId().toString()),
-                                                StringData.fromString(job.getJobName()),
-                                                StringData.fromString(job.getJobState().toString()),
-                                                DateTimeUtils.toTimestampData(
-                                                        job.getStartTime(), 3)))
+                                it -> {
+                                    JobStatusMessage job = it.f0;
+                                    JobResult result = it.f1;
+                                    String errorMessage = "";
+                                    if (result != null) {
+                                        if (result.getSerializedThrowable().isPresent()) {
+                                            Throwable rootCause =
+                                                    result.getSerializedThrowable()
+                                                            .get()
+                                                            .getCause();
+                                            while (rootCause.getCause() != null) {
+                                                rootCause = rootCause.getCause();
+                                            }
+                                            errorMessage = rootCause.getMessage();
+                                        }
+                                    }
+                                    return GenericRowData.of(
+                                            StringData.fromString(job.getJobId().toString()),
+                                            StringData.fromString(job.getJobName()),
+                                            StringData.fromString(job.getJobState().toString()),
+                                            DateTimeUtils.toTimestampData(job.getStartTime(), 3),
+                                            StringData.fromString(errorMessage));
+                                })
                         .collect(Collectors.toList());
         return ResultFetcher.fromResults(
                 operationHandle,
@@ -697,7 +741,8 @@ public class OperationExecutor {
                         Column.physical(JOB_ID, DataTypes.STRING()),
                         Column.physical(JOB_NAME, DataTypes.STRING()),
                         Column.physical(STATUS, DataTypes.STRING()),
-                        Column.physical(START_TIME, DataTypes.TIMESTAMP_WITH_LOCAL_TIME_ZONE())),
+                        Column.physical(START_TIME, DataTypes.TIMESTAMP_WITH_LOCAL_TIME_ZONE()),
+                        Column.physical(ERROR_MESSAGE, DataTypes.STRING())),
                 resultRows);
     }
 
